@@ -16,9 +16,9 @@
 #include <algorithm>
 #include <chrono>
 
+#include "../crypto_native.h"
 #ifdef HAVE_LIBCRYPTSETUP
 #include <libcryptsetup.h>
-#include "../crypto_native.h"
 #endif
 
 // Helper class to manage loopback devices for testing
@@ -127,6 +127,20 @@ void CleanupDeviceMapper(const std::string& name) {
 #endif
 }
 
+TEST_CASE("LUKS sector size argument", "[crypto][sectorsize]") {
+    for (std::size_t size : {512, 1024, 2048, 4096}) {
+        std::size_t parsed = 0;
+        REQUIRE(ParseLuksSectorSize(std::to_string(size), &parsed));
+        REQUIRE(parsed == size);
+    }
+    for (const char* text : {"", "0", "256", "8192", "4k", "04096", "4096 ", " 4096", "-512", "3000"}) {
+        std::size_t parsed = 0;
+        INFO("text: '" << text << "'");
+        REQUIRE_FALSE(ParseLuksSectorSize(text, &parsed));
+        REQUIRE(parsed == 0);
+    }
+}
+
 #ifdef HAVE_LIBCRYPTSETUP
 TEST_CASE("LUKS default key size follows the cipher mode", "[crypto][keysize]") {
     REQUIRE(LuksDefaultKeySizeBits("aes-xts-plain64") == 512);
@@ -225,6 +239,37 @@ TEST_CASE("LUKS Crypto Operations", "[crypto][luks]") {
         }
         REQUIRE(open_result);
 
+        CleanupDeviceMapper(mapped_name);
+    }
+
+    SECTION("LUKS Format - sector size") {
+        // Without a sector size the format stays at 512, as it was.
+        REQUIRE(CryptInitNative(loop.GetDevice(), test_label, test_cipher,
+                               test_key, &error_msg));
+        struct crypt_device *cd = NULL;
+        REQUIRE(crypt_init(&cd, loop.GetDevice().c_str()) >= 0);
+        REQUIRE(crypt_load(cd, CRYPT_LUKS, NULL) >= 0);
+        REQUIRE(crypt_get_sector_size(cd) == 512);
+        crypt_free(cd);
+
+        bool format_result = CryptInitNative(loop.GetDevice(), test_label, test_cipher,
+                                            test_key, &error_msg, 4096);
+        if (!format_result) {
+            WARN("Format failed: " << error_msg);
+        }
+        REQUIRE(format_result);
+        cd = NULL;
+        REQUIRE(crypt_init(&cd, loop.GetDevice().c_str()) >= 0);
+        REQUIRE(crypt_load(cd, CRYPT_LUKS, NULL) >= 0);
+        REQUIRE(crypt_get_sector_size(cd) == 4096);
+        crypt_free(cd);
+
+        bool open_result = CryptOpenNative(loop.GetDevice(), mapped_name,
+                                          test_key, &error_msg);
+        if (!open_result) {
+            WARN("Open failed: " << error_msg);
+        }
+        REQUIRE(open_result);
         CleanupDeviceMapper(mapped_name);
     }
 
